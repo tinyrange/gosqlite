@@ -1,11 +1,8 @@
-package main
+package gosqlite
 
 import (
 	"encoding/binary"
-	"flag"
 	"fmt"
-	"log/slog"
-	"os"
 	"slices"
 )
 
@@ -50,6 +47,10 @@ func (r BinaryReader) varint(off int64) (uint64, int64) {
 	var i int64 = 0
 
 	for i = 0; i < 9; i++ {
+		if off+i >= int64(len(r)) {
+			return 0, -1 // overflow
+		}
+
 		if r[off+i]&0b1000_0000 == 0 {
 			break
 		}
@@ -57,7 +58,8 @@ func (r BinaryReader) varint(off int64) (uint64, int64) {
 
 	i += 1
 
-	data := r.read(off, i)
+	data := make([]byte, i)
+	copy(data, r[off:off+i])
 
 	slices.Reverse(data)
 
@@ -75,6 +77,12 @@ func (t *Table) Read(cb func(val []any) error) error {
 	return t.db.readPage(int(t.rootPage), func(rowId uint64, payload BinaryReader) error {
 		// Read the cell header length.
 		hdrLen, payloadOff := payload.varint(0)
+		if payloadOff == -1 {
+			return fmt.Errorf("[outer] overflow reading page")
+		}
+		if hdrLen > uint64(len(payload)) {
+			return fmt.Errorf("hdrLen is longer than the payload %d > %d: %+v", hdrLen, len(payload), payload)
+		}
 
 		var (
 			types []uint64
@@ -87,11 +95,12 @@ func (t *Table) Read(cb func(val []any) error) error {
 			}
 
 			typ, payloadOff = payload.varint(payloadOff)
+			if payloadOff == -1 {
+				return fmt.Errorf("[inner] overflow reading page")
+			}
 
 			types = append(types, typ)
 		}
-
-		slog.Info("", "types", types)
 
 		var values []any
 
@@ -204,6 +213,8 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 		}
 
 		return nil
+	case 0x0a: // index leaf
+		return nil
 	case 0x0d: // table exterior cell
 		for _, cellPointer := range cellPointers {
 			var off = rawPageOffset + int64(cellPointer)
@@ -224,6 +235,25 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 	}
 }
 
+func (db *SQLiteDatabase) Tables() []string {
+	var ret []string
+
+	for k := range db.tables {
+		ret = append(ret, k)
+	}
+
+	return ret
+}
+
+func (db *SQLiteDatabase) Table(name string) (*Table, error) {
+	tbl, ok := db.tables[name]
+	if !ok {
+		return nil, fmt.Errorf("table not found: %s", name)
+	}
+
+	return tbl, nil
+}
+
 func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
 	db := &SQLiteDatabase{BinaryReader: data, tables: make(map[string]*Table)}
 
@@ -240,8 +270,6 @@ func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
 			return nil
 		}
 
-		slog.Info("", "val", val)
-
 		db.tables[val[1].(string)] = &Table{
 			db:       db,
 			rootPage: val[3].(uint64),
@@ -254,44 +282,4 @@ func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
 	}
 
 	return db, nil
-}
-
-var (
-	input = flag.String("input", "", "The input sqlite file to read.")
-)
-
-func appMain() error {
-	flag.Parse()
-
-	data, err := os.ReadFile(*input)
-	if err != nil {
-		return err
-	}
-
-	db, err := ParseDatabase(data)
-	if err != nil {
-		return err
-	}
-
-	for name, table := range db.tables {
-		slog.Info("table", "name", name, "sql", table.Sql)
-		if err := table.Read(func(val []any) error {
-			slog.Info("row", "values", val)
-
-			return nil
-		}); err != nil {
-			return err
-		}
-	}
-
-	_ = db
-
-	return nil
-}
-
-func main() {
-	if err := appMain(); err != nil {
-		slog.Error("fatal", "err", err)
-		os.Exit(1)
-	}
 }
