@@ -1,8 +1,10 @@
 package gosqlite
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"slices"
 )
 
@@ -161,23 +163,38 @@ func (t *Table) Read(cb func(val []any) error) error {
 }
 
 type SQLiteDatabase struct {
-	BinaryReader
+	r        io.ReaderAt
 	pageSize uint16
 	tables   map[string]*Table
+}
+
+func (db *SQLiteDatabase) reader(off int64, len int64) (BinaryReader, error) {
+	data := make([]byte, len)
+
+	if _, err := db.r.ReadAt(data, off); err != nil {
+		return nil, err
+	}
+
+	return BinaryReader(data), nil
 }
 
 func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryReader) error) error {
 	var rawPageOffset int64 = (int64(page) - 1) * int64(db.pageSize)
 
-	pageOffset := rawPageOffset
+	pageReader, err := db.reader(rawPageOffset, int64(db.pageSize))
+	if err != nil {
+		return err
+	}
+
+	var pageOffset int64 = 0
 
 	if page == 1 {
 		pageOffset += 100
 	}
 
-	bTreePageType := db.u8(pageOffset)
+	bTreePageType := pageReader.u8(pageOffset)
 	// firstFreeBlock := db.u16(pageOffset + 1)
-	numberOfCells := db.u16(pageOffset + 3)
+	numberOfCells := pageReader.u16(pageOffset + 3)
 	// startOfCellContent := db.u16(pageOffset + 5)
 	// fragmentedFreeBytes := db.u8(pageOffset + 7)
 
@@ -185,13 +202,13 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 
 	var rightMostPointer uint32 = 0
 	if bTreePageType == 0x05 {
-		rightMostPointer = db.u32(pageOffset)
+		rightMostPointer = pageReader.u32(pageOffset)
 		pageOffset += 4
 	}
 
 	cellPointers := make([]uint16, numberOfCells)
 	for i := 0; i < len(cellPointers); i++ {
-		cellPointers[i] = db.u16(pageOffset + int64(i)*2)
+		cellPointers[i] = pageReader.u16(pageOffset + int64(i)*2)
 	}
 
 	switch bTreePageType {
@@ -199,11 +216,11 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 		return nil
 	case 0x05: // table interior cell
 		for _, cellPointer := range cellPointers {
-			var off = rawPageOffset + int64(cellPointer)
+			var off = int64(cellPointer)
 
-			leftMostPointer := db.u32(off)
+			leftMostPointer := pageReader.u32(off)
 			off += 4
-			key, _ := db.varint(off)
+			key, _ := pageReader.varint(off)
 
 			_ = key
 
@@ -219,12 +236,12 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 		return nil
 	case 0x0d: // table exterior cell
 		for _, cellPointer := range cellPointers {
-			var off = rawPageOffset + int64(cellPointer)
+			var off = int64(cellPointer)
 
-			cellSize, off := db.varint(off)
-			rowId, off := db.varint(off)
+			cellSize, off := pageReader.varint(off)
+			rowId, off := pageReader.varint(off)
 
-			payload := BinaryReader(db.read(off, int64(cellSize)))
+			payload := BinaryReader(pageReader.read(off, int64(cellSize)))
 
 			if err := cbCell(rowId, payload); err != nil {
 				return err
@@ -256,14 +273,19 @@ func (db *SQLiteDatabase) Table(name string) (*Table, error) {
 	return tbl, nil
 }
 
-func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
-	db := &SQLiteDatabase{BinaryReader: data, tables: make(map[string]*Table)}
+func OpenDatabase(r io.ReaderAt) (*SQLiteDatabase, error) {
+	db := &SQLiteDatabase{r: r, tables: make(map[string]*Table)}
 
-	if string(db.read(0, 16)) != "SQLite format 3\x00" {
+	hdr, err := db.reader(0, 100)
+	if err != nil {
+		return nil, err
+	}
+
+	if string(hdr.read(0, 16)) != "SQLite format 3\x00" {
 		return nil, fmt.Errorf("bad magic")
 	}
 
-	db.pageSize = db.u16(16)
+	db.pageSize = hdr.u16(16)
 
 	schemaTable := &Table{db: db, rootPage: 1}
 
@@ -284,4 +306,8 @@ func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
 	}
 
 	return db, nil
+}
+
+func ParseDatabase(data []byte) (*SQLiteDatabase, error) {
+	return OpenDatabase(bytes.NewReader(data))
 }

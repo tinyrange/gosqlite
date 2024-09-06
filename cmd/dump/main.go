@@ -15,12 +15,13 @@ var (
 func appMain() error {
 	flag.Parse()
 
-	data, err := os.ReadFile(*input)
+	f, err := os.Open(*input)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 
-	db, err := gosqlite.ParseDatabase(data)
+	db, err := gosqlite.OpenDatabase(f)
 	if err != nil {
 		return err
 	}
