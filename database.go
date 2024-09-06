@@ -195,6 +195,8 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 	}
 
 	switch bTreePageType {
+	case 0x02: // index interior
+		return nil
 	case 0x05: // table interior cell
 		for _, cellPointer := range cellPointers {
 			var off = rawPageOffset + int64(cellPointer)
