@@ -217,7 +217,7 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 	case 0x02: // index interior
 		return nil
 	case 0x05: // table interior cell
-		for _, cellPointer := range cellPointers {
+		for i, cellPointer := range cellPointers {
 			var off = int64(cellPointer)
 
 			leftMostPointer := pageReader.u32(off)
@@ -226,8 +226,16 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 
 			_ = key
 
-			if err := db.readPage(int(leftMostPointer), cbCell); err != nil {
-				return err
+			if i == len(cellPointers)-1 {
+				for x := leftMostPointer; x <= rightMostPointer; x++ {
+					if err := db.readPage(int(x), cbCell); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := db.readPage(int(leftMostPointer), cbCell); err != nil {
+					return err
+				}
 			}
 		}
 
