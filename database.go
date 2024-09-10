@@ -214,6 +214,9 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 	}
 
 	switch bTreePageType {
+	case 0x00: // unknown
+		// ignored since I'm not sure where these come from but it doesn't seem to be a fatal error.
+		return nil
 	case 0x02: // index interior
 		return nil
 	case 0x05: // table interior cell
