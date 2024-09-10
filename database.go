@@ -239,11 +239,19 @@ func (db *SQLiteDatabase) readPage(page int, cbCell func(rowId uint64, r BinaryR
 
 			if i == len(cellPointers)-1 {
 				for x := leftMostPointer; x <= rightMostPointer; x++ {
+					if x == uint32(page) {
+						return fmt.Errorf("attempt to re-read own page")
+					}
+
 					if err := db.readPage(int(x), cbCell); err != nil {
 						return err
 					}
 				}
 			} else {
+				if leftMostPointer == uint32(page) {
+					return fmt.Errorf("attempt to re-read own page")
+				}
+
 				if err := db.readPage(int(leftMostPointer), cbCell); err != nil {
 					return err
 				}
